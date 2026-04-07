@@ -47,7 +47,7 @@ print("=" * 60)
 print("STEP 1: Loading and cleaning data")
 print("=" * 60)
 
-df = pd.read_csv("city_day_interpolated.csv")
+df = pd.read_csv("city_day_interpolated_fixed.csv")
 df["Date"] = pd.to_datetime(df["Date"])
 df = df.sort_values(["City", "Date"]).reset_index(drop=True)
 
@@ -154,14 +154,27 @@ y_test_sc  = scaler_y.transform(y_test.reshape(-1, 1)).ravel()
 results = {}
 
 def evaluate(name, y_true, y_pred):
+    # Standard metrics (Original Scale)
     mse  = mean_squared_error(y_true, y_pred)
     rmse = np.sqrt(mse)
     r2   = r2_score(y_true, y_pred)
-    print(f"  {name:20s}  MSE={mse:8.3f}  RMSE={rmse:7.3f}  R²={r2:.6f}")
-    results[name] = {"MSE": mse, "RMSE": rmse, "R2": r2,
-                     "y_pred": y_pred, "y_true": y_true}
+    
+    # Calculate Scaled MSE
+    y_true_sc = scaler_y.transform(y_true.reshape(-1, 1)).ravel()
+    y_pred_sc = scaler_y.transform(y_pred.reshape(-1, 1)).ravel()
+    scaled_mse = mean_squared_error(y_true_sc, y_pred_sc)
+    
+    # Print and store both
+    print(f"  {name:20s}  MSE={mse:8.3f}  Scaled MSE={scaled_mse:8.5f}  RMSE={rmse:7.3f}  R²={r2:.6f}")
+    results[name] = {
+        "MSE": mse, 
+        "Scaled_MSE": scaled_mse, 
+        "RMSE": rmse, 
+        "R2": r2,
+        "y_pred": y_pred, 
+        "y_true": y_true
+    }
     return mse, rmse, r2
-
 
 # ─────────────────────────────────────────────
 # STEP 4: RIDGE REGRESSION
@@ -342,7 +355,7 @@ print("STEP 9: Final Results Summary")
 print("=" * 60)
 
 summary = pd.DataFrame([
-    {"Model": k, "MSE": v["MSE"], "RMSE": v["RMSE"], "R²": v["R2"]}
+    {"Model": k, "MSE": v["MSE"], "Scaled MSE": v["Scaled_MSE"], "RMSE": v["RMSE"], "R²": v["R2"]}
     for k, v in results.items()
 ]).sort_values("MSE")
 
