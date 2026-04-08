@@ -273,78 +273,78 @@ evaluate("LightGBM", y_test, y_pred_lgb)
 # ─────────────────────────────────────────────
 # STEP 8: LSTM (FIXED)
 # ─────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("STEP 8: LSTM (fixed — per-city sequences, time-based split)")
-print("=" * 60)
+# print("\n" + "=" * 60)
+# print("STEP 8: LSTM (fixed — per-city sequences, time-based split)")
+# print("=" * 60)
 
-SEQ_LEN = 14   # use 14 days of history to predict next day
+# SEQ_LEN = 14   # use 14 days of history to predict next day
 
-def build_sequences(data_df, feature_cols, target_col, seq_len):
-    """Build LSTM sequences grouped by city, preserving time order."""
-    X_seqs, y_seqs = [], []
-    for city, grp in data_df.groupby("City"):
-        grp = grp.sort_values("Date")
-        feats  = grp[feature_cols].values
-        target = grp[target_col].values
-        for i in range(seq_len, len(grp)):
-            X_seqs.append(feats[i - seq_len : i])
-            y_seqs.append(target[i])
-    return np.array(X_seqs, dtype=np.float32), np.array(y_seqs, dtype=np.float32)
+# def build_sequences(data_df, feature_cols, target_col, seq_len):
+#     """Build LSTM sequences grouped by city, preserving time order."""
+#     X_seqs, y_seqs = [], []
+#     for city, grp in data_df.groupby("City"):
+#         grp = grp.sort_values("Date")
+#         feats  = grp[feature_cols].values
+#         target = grp[target_col].values
+#         for i in range(seq_len, len(grp)):
+#             X_seqs.append(feats[i - seq_len : i])
+#             y_seqs.append(target[i])
+#     return np.array(X_seqs, dtype=np.float32), np.array(y_seqs, dtype=np.float32)
 
-# Use scaled features for LSTM
-train_df_sc = train_df.copy()
-test_df_sc  = test_df.copy()
-train_df_sc[FEATURE_COLS] = scaler_X.transform(train_df[FEATURE_COLS].values)
-test_df_sc[FEATURE_COLS]  = scaler_X.transform(test_df[FEATURE_COLS].values)
-train_df_sc["AQI_sc"] = scaler_y.transform(train_df[["AQI"]].values).ravel()
-test_df_sc["AQI_sc"]  = scaler_y.transform(test_df[["AQI"]].values).ravel()
+# # Use scaled features for LSTM
+# train_df_sc = train_df.copy()
+# test_df_sc  = test_df.copy()
+# train_df_sc[FEATURE_COLS] = scaler_X.transform(train_df[FEATURE_COLS].values)
+# test_df_sc[FEATURE_COLS]  = scaler_X.transform(test_df[FEATURE_COLS].values)
+# train_df_sc["AQI_sc"] = scaler_y.transform(train_df[["AQI"]].values).ravel()
+# test_df_sc["AQI_sc"]  = scaler_y.transform(test_df[["AQI"]].values).ravel()
 
-print("  Building sequences...")
-X_lstm_train, y_lstm_train = build_sequences(train_df_sc, FEATURE_COLS, "AQI_sc", SEQ_LEN)
-X_lstm_test,  y_lstm_test  = build_sequences(test_df_sc,  FEATURE_COLS, "AQI_sc", SEQ_LEN)
-print(f"  Train sequences: {X_lstm_train.shape}")
-print(f"  Test  sequences: {X_lstm_test.shape}")
+# print("  Building sequences...")
+# X_lstm_train, y_lstm_train = build_sequences(train_df_sc, FEATURE_COLS, "AQI_sc", SEQ_LEN)
+# X_lstm_test,  y_lstm_test  = build_sequences(test_df_sc,  FEATURE_COLS, "AQI_sc", SEQ_LEN)
+# print(f"  Train sequences: {X_lstm_train.shape}")
+# print(f"  Test  sequences: {X_lstm_test.shape}")
 
-n_features = X_lstm_train.shape[2]
+# n_features = X_lstm_train.shape[2]
 
-# Build LSTM model
-lstm_model = Sequential([
-    LSTM(128, return_sequences=True, input_shape=(SEQ_LEN, n_features)),
-    Dropout(0.2),
-    BatchNormalization(),
-    LSTM(64, return_sequences=False),
-    Dropout(0.2),
-    BatchNormalization(),
-    Dense(32, activation="relu"),
-    Dense(1)
-])
+# # Build LSTM model
+# lstm_model = Sequential([
+#     LSTM(128, return_sequences=True, input_shape=(SEQ_LEN, n_features)),
+#     Dropout(0.2),
+#     BatchNormalization(),
+#     LSTM(64, return_sequences=False),
+#     Dropout(0.2),
+#     BatchNormalization(),
+#     Dense(32, activation="relu"),
+#     Dense(1)
+# ])
 
-lstm_model.compile(
-    optimizer=Adam(learning_rate=0.001),
-    loss="mse"
-)
+# lstm_model.compile(
+#     optimizer=Adam(learning_rate=0.001),
+#     loss="mse"
+# )
 
-callbacks = [
-    EarlyStopping(patience=10, restore_best_weights=True, verbose=1),
-    ReduceLROnPlateau(patience=5, factor=0.5, verbose=1)
-]
+# callbacks = [
+#     EarlyStopping(patience=10, restore_best_weights=True, verbose=1),
+#     ReduceLROnPlateau(patience=5, factor=0.5, verbose=1)
+# ]
 
-print("  Training LSTM...")
-history = lstm_model.fit(
-    X_lstm_train, y_lstm_train,
-    validation_data=(X_lstm_test, y_lstm_test),
-    epochs=100,
-    batch_size=256,
-    callbacks=callbacks,
-    verbose=1
-)
+# print("  Training LSTM...")
+# history = lstm_model.fit(
+#     X_lstm_train, y_lstm_train,
+#     validation_data=(X_lstm_test, y_lstm_test),
+#     epochs=100,
+#     batch_size=256,
+#     callbacks=callbacks,
+#     verbose=1
+# )
 
-# Predict and inverse-transform
-y_pred_lstm_sc = lstm_model.predict(X_lstm_test, verbose=0).ravel()
-y_pred_lstm    = scaler_y.inverse_transform(y_pred_lstm_sc.reshape(-1, 1)).ravel()
-y_test_lstm    = scaler_y.inverse_transform(y_lstm_test.reshape(-1, 1)).ravel()
+# # Predict and inverse-transform
+# y_pred_lstm_sc = lstm_model.predict(X_lstm_test, verbose=0).ravel()
+# y_pred_lstm    = scaler_y.inverse_transform(y_pred_lstm_sc.reshape(-1, 1)).ravel()
+# y_test_lstm    = scaler_y.inverse_transform(y_lstm_test.reshape(-1, 1)).ravel()
 
-evaluate("LSTM", y_test_lstm, y_pred_lstm)
+# evaluate("LSTM", y_test_lstm, y_pred_lstm)
 
 
 # ─────────────────────────────────────────────
@@ -442,18 +442,75 @@ if hasattr(best_tree_model, "feature_importances_"):
     print("  Saved: feature_importance.png")
 
 # ── Plot 4: LSTM training history ──
-plt.figure(figsize=(8, 4))
-plt.plot(history.history["loss"],     label="Train Loss")
-plt.plot(history.history["val_loss"], label="Val Loss")
-plt.title("LSTM Training History", fontsize=13, fontweight="bold")
-plt.xlabel("Epoch")
-plt.ylabel("MSE Loss")
-plt.legend()
-plt.tight_layout()
-plt.savefig("lstm_training.png", dpi=150, bbox_inches="tight")
-plt.close()
-print("  Saved: lstm_training.png")
+# plt.figure(figsize=(8, 4))
+# plt.plot(history.history["loss"],     label="Train Loss")
+# plt.plot(history.history["val_loss"], label="Val Loss")
+# plt.title("LSTM Training History", fontsize=13, fontweight="bold")
+# plt.xlabel("Epoch")
+# plt.ylabel("MSE Loss")
+# plt.legend()
+# plt.tight_layout()
+# plt.savefig("lstm_training.png", dpi=150, bbox_inches="tight")
+# plt.close()
+# print("  Saved: lstm_training.png")
+
+# print("\n" + "=" * 60)
+# print("  DONE! All models trained and evaluated.")
+# print("=" * 60)
+
+
+
+# ─────────────────────────────────────────────
+# STEP 10: SHAP ANALYSIS (Model Interpretability)
+# ─────────────────────────────────────────────
+import shap
 
 print("\n" + "=" * 60)
-print("  DONE! All models trained and evaluated.")
+print("STEP 10: SHAP Analysis for LightGBM")
 print("=" * 60)
+
+# 1. Initialize the TreeExplainer with your best tree model
+# (Assuming lgb_model from Step 7 is your chosen model)
+explainer = shap.TreeExplainer(lgb_model)
+
+# 2. To save time, calculate SHAP values on the test set 
+# (or a sample of it if the test set is massive)
+X_test_sample = X_test  # Or pd.DataFrame(X_test, columns=FEATURE_COLS).sample(1000)
+shap_values = explainer(X_test_sample)
+
+# ── Plot A: SHAP Summary Plot (Beeswarm) ──
+# This shows feature importance AND the direction of the impact
+plt.figure(figsize=(10, 8))
+shap.summary_plot(shap_values, X_test_sample, feature_names=FEATURE_COLS, max_display=40, show=False)
+plt.title("SHAP Summary: How Features Impact AQI Predictions", fontsize=14, fontweight="bold")
+plt.tight_layout()
+plt.savefig("shap_summary_beeswarm.png", dpi=150)
+plt.close()
+print("  Saved: shap_summary_beeswarm.png")
+
+# ── Plot B: Partial Dependence Plot (PDP) ──
+# Let's look at the top feature (likely a rolling mean or lag)
+top_feature = FEATURE_COLS[np.argsort(-np.abs(shap_values.values).mean(0))[0]]
+plt.figure(figsize=(8, 6))
+shap.dependence_plot(top_feature, shap_values.values, X_test_sample, feature_names=FEATURE_COLS, show=False)
+plt.title(f"SHAP Dependence Plot: {top_feature}", fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.savefig(f"shap_dependence_plot.png", dpi=150)
+plt.close()
+print("  Saved: shap_dependence_plot.png")
+
+# ── Plot C: Local Interpretability (Waterfall Plot) ──
+# Pick the single worst AQI day in the test set to explain it
+worst_day_idx = np.argmax(y_test)
+worst_day_actual = y_test[worst_day_idx]
+worst_day_pred = y_pred_lgb[worst_day_idx]
+
+print(f"\n  Explaining worst day prediction (Actual AQI: {worst_day_actual:.1f}, Predicted: {worst_day_pred:.1f})")
+
+plt.figure(figsize=(10, 6))
+shap.plots.waterfall(shap_values[worst_day_idx], max_display=10, show=False)
+plt.title("SHAP Waterfall: Explaining the Worst AQI Day", fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.savefig("shap_waterfall_worst_day.png", dpi=150)
+plt.close()
+print("  Saved: shap_waterfall_worst_day.png")
