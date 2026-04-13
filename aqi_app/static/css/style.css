@@ -479,3 +479,50 @@ footer {
 }
 footer a { color: var(--text-dim); text-decoration: none; }
 footer a:hover { color: var(--accent); }
+
+/* ── Mode toggle ─────────────────────────────────────── */
+.mode-toggle { display: flex; gap: 0; }
+.mode-btn {
+  background: var(--bg-card2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: 'Jost', sans-serif;
+  font-size: 0.82rem; font-weight: 500;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.mode-btn:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+.mode-btn:last-child  { border-radius: 0 var(--radius) var(--radius) 0; border-left: none; }
+.mode-btn.active      { background: var(--accent2); color: #000; border-color: var(--accent); }
+
+input[type="date"] {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: 'Jost', sans-serif;
+  font-size: 0.9rem;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+}
+input[type="date"]:focus { outline: none; border-color: var(--accent); }
+
+/* ── Actual AQI banner ───────────────────────────────── */
+.actual-banner {
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.5rem;
+  margin-bottom: 1.5rem;
+  display: flex; align-items: center;
+  justify-content: space-between; flex-wrap: wrap; gap: 1rem;
+  border: 1px solid;
+  animation: fadeIn 0.3s ease;
+}
+.actual-banner-left { display: flex; flex-direction: column; gap: 0.2rem; }
+.actual-banner-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; color: inherit; opacity: 0.7; }
+.actual-banner-aqi {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 2.8rem; line-height: 1;
+}
+.actual-banner-bucket { font-size: 0.85rem; font-weight: 600; }
+.actual-banner-right { font-size: 0.82rem; opacity: 0.8; text-align: right; }

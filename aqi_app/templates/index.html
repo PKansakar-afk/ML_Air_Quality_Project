@@ -48,19 +48,46 @@
         <p>Fetches live pollutant data from WAQI API + current weather from Open-Meteo, then runs all 4 tuned models.</p>
       </div>
 
-      <div class="control-row">
-        <div class="select-wrap">
-          <label>City</label>
-          <select id="nowcast-city">
-            {% for city in cities %}
-            <option value="{{ city }}">{{ city }}</option>
-            {% endfor %}
-          </select>
+      <!-- Replace the existing control-row in tab-nowcast with this -->
+        <div class="control-row">
+          <div class="select-wrap">
+            <label>City</label>
+            <select id="nowcast-city">
+              {% for city in cities %}
+              <option value="{{ city }}">{{ city }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <!-- Mode toggle -->
+          <div class="select-wrap">
+            <label>Mode</label>
+            <div class="mode-toggle">
+              <button class="mode-btn active" id="mode-live" onclick="setMode('live')">
+                ⚡ Live
+              </button>
+              <button class="mode-btn" id="mode-past" onclick="setMode('past')">
+                🕐 Past Date
+              </button>
+            </div>
+          </div>
+
+          <!-- Past date picker (hidden by default) -->
+          <div class="select-wrap" id="date-wrap" style="display:none">
+            <label>Date (2015–2020)</label>
+            <input type="date" id="past-date"
+                  min="2015-01-01"
+                  value="2020-01-15">
+          </div>
+
+          <button class="predict-btn" id="nowcast-btn" onclick="runNowcast()">
+            <span class="btn-icon">⚡</span>
+            <span id="btn-label">Predict Now</span>
+          </button>
         </div>
-        <button class="predict-btn" id="nowcast-btn" onclick="runNowcast()">
-          <span class="btn-icon">⚡</span> Predict Now
-        </button>
-      </div>
+
+        <!-- Actual AQI banner (shown only for past mode) -->
+        <div id="actual-banner" class="actual-banner hidden"></div>
 
       <div id="nowcast-loading" class="loading-state hidden">
         <div class="spinner"></div>

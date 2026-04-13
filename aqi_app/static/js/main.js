@@ -130,12 +130,12 @@ function renderNowcast(data) {
     waqi.updated ? `Updated: ${waqi.updated}` : "";
 
   const pollutantDefs = [
-    { key: "aqi",     label: "AQI" },
-    { key: "pm25",    label: "PM2.5" },
-    { key: "pm10",    label: "PM10" },
-    { key: "no2",     label: "NO₂" },
-    { key: "so2",     label: "SO₂" },
-    { key: "co",      label: "CO" },
+    { key: "aqi",  label: "AQI (live)" },
+    { key: "pm25", label: "PM2.5 μg/m³" },
+    { key: "pm10", label: "PM10 μg/m³" },
+    { key: "no2",  label: "NO₂ μg/m³*" },
+    { key: "so2",  label: "SO₂ μg/m³*" },
+    { key: "co",   label: "CO mg/m³*" },
   ];
   const weatherDefs = [
     { key: "temp",     label: "Temp °C" },
@@ -186,6 +186,16 @@ function renderNowcast(data) {
     `;
     grid.appendChild(card);
   });
+
+  const existingNote = document.getElementById("unit-note");
+  if (existingNote) existingNote.remove();   // remove stale note on re-predict
+  grid.insertAdjacentHTML("afterend", `
+      <p id="unit-note" style="font-size:0.72rem; color:var(--text-muted); margin-bottom:1.5rem; margin-top:0.4rem">
+          * NO₂ and SO₂ converted ppb → μg/m³ (×1.88, ×2.62). 
+            CO converted ppm → mg/m³ (×1.145) to match CPCB training units.
+            NO and NOx not available from WAQI — historical city medians used.
+      </p>
+  `);
 
   // ── Historical context ────────────────────────────────
   document.getElementById("ctx-month-name").textContent = data.month_name;
@@ -461,4 +471,174 @@ function positionTooltip(e) {
   if (y + 200 > window.innerHeight) y = e.clientY - 200 - margin;
   tt.style.left = x + "px";
   tt.style.top  = y + "px";
+}
+
+// ── Mode toggle ──────────────────────────────────────
+let currentMode = "live";
+
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById("mode-live").classList.toggle("active", mode === "live");
+  document.getElementById("mode-past").classList.toggle("active", mode === "past");
+  document.getElementById("date-wrap").style.display  = mode === "past" ? "flex" : "none";
+  document.getElementById("btn-label").textContent    = mode === "live" ? "Predict Now" : "Run Hindcast";
+  document.getElementById("actual-banner").classList.add("hidden");
+  document.getElementById("nowcast-results").classList.add("hidden");
+}
+
+// ── Update runNowcast to handle both modes ────────────
+async function runNowcast() {
+  async function safeFetch(url, options) {
+    const res  = await fetch(url, options);
+    const text = await res.text();  // always read as text first
+    try {
+        const data = JSON.parse(text);
+        return { ok: res.ok, status: res.status, data };
+    } catch {
+        // Flask returned HTML (unhandled exception page)
+        const preview = text.slice(0, 120).replace(/<[^>]+>/g, "").trim();
+        return {
+            ok: false,
+            status: res.status,
+            data: { error: `Server returned non-JSON response (${res.status}): ${preview}` }
+        };
+    }
+  }
+
+  const city = document.getElementById("nowcast-city").value;
+  if (!city) return;
+
+  document.getElementById("nowcast-results").classList.add("hidden");
+  document.getElementById("actual-banner").classList.add("hidden");
+  document.getElementById("nowcast-loading").classList.remove("hidden");
+
+  try {
+    let data;
+    if (currentMode === "live") {
+      const { ok, data } = await safeFetch("/api/nowcast", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ city })
+      });
+      if (!ok || data.error) throw new Error(data.error || "Unknown error");
+      renderNowcast(data);
+    } else {
+      const date = document.getElementById("past-date").value;
+      const { ok, data } = await safeFetch("/api/hindcast", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ city, date })
+      });
+      if (!ok || data.error) throw new Error(data.error || "Unknown error");
+      renderHindcast(data);
+    }
+  } catch (err) {
+    document.getElementById("nowcast-loading").classList.add("hidden");
+    alert("Error: " + err.message);
+  }
+}
+
+function renderHindcast(data) {
+  document.getElementById("nowcast-loading").classList.add("hidden");
+
+  // ── Actual AQI banner ────────────────────────────────
+  const actual = data.actual;
+  if (actual.aqi != null) {
+    const banner = document.getElementById("actual-banner");
+    banner.style.background   = actual.color + "18";
+    banner.style.borderColor  = actual.color + "50";
+    banner.style.color        = actual.color;
+    banner.classList.remove("hidden");
+
+    // Error % vs each model
+    const MODEL_ORDER = ["Random Forest","XGBoost","LightGBM","Ridge"];
+    const errRows = MODEL_ORDER.map(name => {
+      const pred = data.predictions[name];
+      if (!pred || pred.aqi == null) return "";
+      const err = ((pred.aqi - actual.aqi) / actual.aqi * 100).toFixed(1);
+      const sign = err > 0 ? "+" : "";
+      return `${name}: ${sign}${err}%`;
+    }).join(" &nbsp;|&nbsp; ");
+
+    banner.innerHTML = `
+      <div class="actual-banner-left">
+        <span class="actual-banner-label">Actual Recorded AQI — ${data.date}</span>
+        <span class="actual-banner-aqi">${actual.aqi}</span>
+        <span class="actual-banner-bucket">${actual.bucket}</span>
+      </div>
+      <div class="actual-banner-right">
+        <div style="margin-bottom:0.3rem; opacity:0.6; font-size:0.72rem">MODEL ERROR VS ACTUAL</div>
+        ${errRows}
+      </div>
+    `;
+  }
+
+  // ── Reuse live strip with actual readings ────────────
+  const readings = actual.readings || {};
+  document.getElementById("live-station-name").textContent = `${data.city} — Historical Data`;
+  document.getElementById("live-updated").textContent = data.date;
+
+  const liveGrid = document.getElementById("live-pollutants");
+  liveGrid.innerHTML = "";
+  const fields = [
+    { key:"pm25",     label:"PM2.5 μg/m³" },
+    { key:"pm10",     label:"PM10 μg/m³"  },
+    { key:"no2",      label:"NO₂ μg/m³"   },
+    { key:"so2",      label:"SO₂ μg/m³"   },
+    { key:"co",       label:"CO mg/m³"    },
+    { key:"temp",     label:"Temp °C"     },
+    { key:"humidity", label:"Humidity %"  },
+    { key:"wind",     label:"Wind km/h"   },
+  ];
+  fields.forEach(f => {
+    const el = document.createElement("div");
+    el.className = "live-item";
+    el.innerHTML = `
+      <span class="live-item-label">${f.label}</span>
+      <span class="live-item-value">${readings[f.key] != null ? readings[f.key] : "—"}</span>
+    `;
+    liveGrid.appendChild(el);
+  });
+
+  // Reuse the rest of renderNowcast for model cards + charts
+  document.getElementById("nowcast-results").classList.remove("hidden");
+  const MODEL_ORDER  = ["Random Forest","XGBoost","LightGBM","Ridge"];
+  const MODEL_COLORS = { "Random Forest":"#FF9800","XGBoost":"#2196F3","LightGBM":"#4CAF50","Ridge":"#AB47BC" };
+  const grid = document.getElementById("model-cards");
+  grid.innerHTML = "";
+  MODEL_ORDER.forEach((name, i) => {
+    const pred = data.predictions[name] || {};
+    const aqi  = pred.aqi;
+    const col  = aqi != null ? aqiColor(aqi) : "#555";
+    const card = document.createElement("div");
+    card.className = "model-card";
+    card.style.animationDelay = `${i * 0.08}s`;
+    card.innerHTML = `
+      <div class="mc-name">${name}</div>
+      <div class="mc-aqi" style="color:${col}">${aqi != null ? aqi : "—"}</div>
+      <div class="mc-bucket" style="color:${col}; border:1px solid ${col}30">${pred.bucket || "N/A"}</div>
+    `;
+    grid.appendChild(card);
+  });
+
+  document.getElementById("ctx-month-name").textContent = data.month_name;
+  const hist = data.historical;
+  if (hist && hist.mean) {
+    const pMean = aqiToPercent(hist.mean);
+    document.getElementById("range-bar-wrap").innerHTML = `
+      <div class="range-track">
+        <div class="range-marker" style="left:${pMean}%"></div>
+      </div>`;
+    document.getElementById("range-stats").innerHTML = `
+      <div class="rs-item"><span class="rs-label">Min</span><span class="rs-value" style="color:var(--good)">${hist.min}</span></div>
+      <div class="rs-item"><span class="rs-label">Avg</span><span class="rs-value" style="color:var(--accent)">${hist.mean}</span></div>
+      <div class="rs-item"><span class="rs-label">Max</span><span class="rs-value" style="color:var(--verypoor)">${hist.max}</span></div>
+    `;
+  }
+  bucketChartNowcast = renderBucketChart("bucket-chart-nowcast", data.bucket_dist, bucketChartNowcast);
+
+  // Hide API warning note in hindcast mode
+  const note = document.getElementById("unit-note");
+  if (note) note.remove();
+  document.getElementById("api-warnings").classList.add("hidden");
 }
