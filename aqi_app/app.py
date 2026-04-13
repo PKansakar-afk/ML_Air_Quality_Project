@@ -461,7 +461,7 @@ def hindcast():
         if target_date <= TRAINING_END:
             # ── Use actual dataset rows (most accurate) ────────
             df_full = pd.read_csv(
-                os.path.join(BASE_DIR, "..", "city_day_with_weather_complete.csv"),
+                os.path.join(BASE_DIR, "city_day_with_weather_complete.csv"),
                 parse_dates=["Date"]
             )
             df_city = df_full[df_full["City"] == city].sort_values("Date").reset_index(drop=True)
@@ -675,4 +675,5 @@ def heatmap():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
