@@ -2,6 +2,7 @@
 AQI Prediction Flask App — Hindcast + Time Series
 Run: python app.py
 """
+from dotenv import load_dotenv
 import os, pickle, warnings
 import requests
 import numpy as np
@@ -14,6 +15,7 @@ warnings.filterwarnings(
     message="X does not have valid feature names, but LGBMRegressor was fitted with feature names"
 )
 
+load_dotenv()
 app = Flask(__name__)
 
 @app.errorhandler(404)
