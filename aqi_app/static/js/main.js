@@ -1,24 +1,31 @@
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
 //  AQI Intelligence — main.js
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
 
-// Active Chart instances (destroyed before re-render)
-let bucketChartNowcast = null;
-let bucketChartHist    = null;
-let heatmapTrendChart  = null;
+let hcBucketChart  = null;
+let tsMainChart    = null;
+let tsScatterChart = null;
+let tsResidualChart= null;
 
 const MONTH_NAMES = [
   "January","February","March","April","May","June",
   "July","August","September","October","November","December"
 ];
 
+const MODEL_ORDER  = ["Random Forest","XGBoost","LightGBM","Ridge"];
+const MODEL_COLORS = {
+  "Random Forest": "#FF9800",
+  "XGBoost":       "#2196F3",
+  "LightGBM":      "#4CAF50",
+  "Ridge":         "#AB47BC",
+};
+
 // ── Tab switching ────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
     document.querySelectorAll(".tab-panel").forEach(p => {
-      p.classList.remove("active");
-      p.classList.add("hidden");
+      p.classList.remove("active"); p.classList.add("hidden");
     });
     btn.classList.add("active");
     const panel = document.getElementById("tab-" + btn.dataset.tab);
@@ -27,410 +34,292 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
   });
 });
 
-// ── Utility: AQI → colour ────────────────────────────────
-function aqiColor(aqi) {
-  if (aqi <= 50)  return "#00c853";
-  if (aqi <= 100) return "#aeea00";
-  if (aqi <= 200) return "#ffd600";
-  if (aqi <= 300) return "#ff6d00";
-  if (aqi <= 400) return "#dd2c00";
+// ── Safe fetch (always parses JSON, never throws on HTML) ─
+async function safeFetch(url, opts) {
+  const res  = await fetch(url, opts);
+  const text = await res.text();
+  try {
+    return { ok: res.ok, data: JSON.parse(text) };
+  } catch {
+    const preview = text.slice(0, 120).replace(/<[^>]+>/g,"").trim();
+    return { ok: false, data: { error: `Server error (${res.status}): ${preview}` } };
+  }
+}
+
+// ── AQI helpers ──────────────────────────────────────────
+function aqiColor(v) {
+  if (v <= 50)  return "#00c853";
+  if (v <= 100) return "#aeea00";
+  if (v <= 200) return "#ffd600";
+  if (v <= 300) return "#ff6d00";
+  if (v <= 400) return "#dd2c00";
   return "#6a0080";
 }
-
-function aqiBucket(aqi) {
-  if (aqi <= 50)  return "Good";
-  if (aqi <= 100) return "Satisfactory";
-  if (aqi <= 200) return "Moderate";
-  if (aqi <= 300) return "Poor";
-  if (aqi <= 400) return "Very Poor";
+function aqiBucket(v) {
+  if (v <= 50)  return "Good";
+  if (v <= 100) return "Satisfactory";
+  if (v <= 200) return "Moderate";
+  if (v <= 300) return "Poor";
+  if (v <= 400) return "Very Poor";
   return "Severe";
 }
+function aqiToPercent(v) { return Math.min(100, Math.max(0, v / 5)); }
 
-// Clamp AQI to 0–500 for percentage calculations
-function aqiToPercent(aqi) {
-  return Math.min(100, Math.max(0, aqi / 5));
-}
-
-// ── Bucket donut chart ───────────────────────────────────
+// ── Donut chart helper ───────────────────────────────────
 const BUCKET_COLORS = {
-  "Good":         "#00c853",
-  "Satisfactory": "#aeea00",
-  "Moderate":     "#ffd600",
-  "Poor":         "#ff6d00",
-  "Very Poor":    "#dd2c00",
-  "Severe":       "#6a0080",
+  "Good":"#00c853","Satisfactory":"#aeea00","Moderate":"#ffd600",
+  "Poor":"#ff6d00","Very Poor":"#dd2c00","Severe":"#6a0080",
 };
-
-function renderBucketChart(canvasId, bucketDist, existingChart) {
-  if (existingChart) existingChart.destroy();
+function renderDonut(canvasId, bucketDist, existing) {
+  if (existing) existing.destroy();
   const canvas = document.getElementById(canvasId);
-  if (!canvas || !bucketDist || !bucketDist.length) return null;
-
-  const labels = bucketDist.map(b => b.AQI_Bucket);
-  const data   = bucketDist.map(b => b.pct);
-  const colors = labels.map(l => BUCKET_COLORS[l] || "#888");
-
+  if (!canvas || !bucketDist?.length) return null;
   return new Chart(canvas, {
     type: "doughnut",
-    data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 1, borderColor: "#07101f" }] },
+    data: {
+      labels: bucketDist.map(b => b.AQI_Bucket),
+      datasets: [{
+        data:            bucketDist.map(b => b.pct),
+        backgroundColor: bucketDist.map(b => BUCKET_COLORS[b.AQI_Bucket] || "#888"),
+        borderWidth: 1, borderColor: "#07101f"
+      }]
+    },
     options: {
       responsive: true,
       plugins: {
-        legend: {
-          position: "right",
-          labels: { color: "#8aaccc", font: { family: "Jost", size: 11 }, boxWidth: 12, padding: 10 }
-        },
-        tooltip: {
-          callbacks: { label: ctx => ` ${ctx.label}: ${ctx.parsed.toFixed(1)}%` }
-        }
+        legend: { position:"right", labels:{color:"#8aaccc",font:{family:"Jost",size:11},boxWidth:12,padding:10}},
+        tooltip: { callbacks:{ label: ctx => ` ${ctx.label}: ${ctx.parsed.toFixed(1)}%` }}
       },
       cutout: "65%",
     }
   });
 }
 
-// ═══════════════════════════════════════════════════════════
-//  TAB 1 — NOWCAST
-// ═══════════════════════════════════════════════════════════
-async function runNowcast() {
-  const city = document.getElementById("nowcast-city").value;
-  if (!city) return;
+// ══════════════════════════════════════════════════════════
+//  TAB 1 — HINDCAST
+// ══════════════════════════════════════════════════════════
+async function runHindcast() {
+  const city = document.getElementById("hc-city").value;
+  const date = document.getElementById("hc-date").value;
+  if (!city || !date) return;
 
-  // Show loading
-  document.getElementById("nowcast-results").classList.add("hidden");
-  document.getElementById("nowcast-loading").classList.remove("hidden");
+  document.getElementById("hc-results").classList.add("hidden");
+  document.getElementById("hc-loading").classList.remove("hidden");
 
-  try {
-    const res  = await fetch("/api/nowcast", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ city })
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    renderNowcast(data);
-  } catch (err) {
-    document.getElementById("nowcast-loading").classList.add("hidden");
-    alert("Error: " + err.message);
-  }
+  const { ok, data } = await safeFetch("/api/hindcast", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ city, date })
+  });
+
+  document.getElementById("hc-loading").classList.add("hidden");
+  if (!ok || data.error) { alert("Error: " + data.error); return; }
+
+  renderHindcast(data);
 }
 
-function renderNowcast(data) {
-  document.getElementById("nowcast-loading").classList.add("hidden");
-  document.getElementById("nowcast-results").classList.remove("hidden");
+function renderHindcast(data) {
+  document.getElementById("hc-results").classList.remove("hidden");
 
-  // ── Live data strip ────────────────────────────────────
-  const live    = data.live;
-  const waqi    = live.waqi || {};
-  const weather = live.weather || {};
+  // ── Actual AQI banner ──────────────────────────────────
+  const actual = data.actual;
+  const banner = document.getElementById("actual-banner");
+  if (actual.aqi != null) {
+    banner.classList.remove("hidden");
+    banner.style.background  = actual.color + "18";
+    banner.style.borderColor = actual.color + "50";
+    banner.style.color       = actual.color;
 
-  document.getElementById("live-station-name").textContent =
-    waqi.station ? `${waqi.station}` : `${data.city} (estimated)`;
-  document.getElementById("live-updated").textContent =
-    waqi.updated ? `Updated: ${waqi.updated}` : "";
+    const errRows = MODEL_ORDER.map(name => {
+      const pred = data.predictions[name];
+      if (!pred?.aqi) return "";
+      const err = ((pred.aqi - actual.aqi) / actual.aqi * 100).toFixed(1);
+      return `<span>${name}: ${err > 0 ? "+" : ""}${err}%</span>`;
+    }).filter(Boolean).join(" &nbsp;|&nbsp; ");
 
-  const pollutantDefs = [
-    { key: "aqi",  label: "AQI (live)" },
-    { key: "pm25", label: "PM2.5 μg/m³" },
-    { key: "pm10", label: "PM10 μg/m³" },
-    { key: "no2",  label: "NO₂ μg/m³*" },
-    { key: "so2",  label: "SO₂ μg/m³*" },
-    { key: "co",   label: "CO mg/m³*" },
+    banner.innerHTML = `
+      <div class="actual-banner-left">
+        <span class="actual-banner-label">Actual Recorded AQI — ${data.date}</span>
+        <span class="actual-banner-aqi">${actual.aqi}</span>
+        <span class="actual-banner-bucket">${actual.bucket}</span>
+      </div>
+      <div class="actual-banner-right">
+        <div style="margin-bottom:0.3rem;opacity:0.6;font-size:0.72rem;text-transform:uppercase;letter-spacing:1px">Model Error vs Actual</div>
+        ${errRows}
+      </div>`;
+  } else {
+    banner.classList.add("hidden");
+  }
+
+  // ── Data source strip ──────────────────────────────────
+  document.getElementById("hc-source-icon").textContent =
+    data.air_source === "CPCB Dataset" ? "📂" : "🌐";
+  document.getElementById("hc-source-label").textContent =
+    `Source: ${data.air_source}`;
+  document.getElementById("hc-date-label").textContent = data.date;
+
+  const readings = actual.readings || {};
+  const fields   = [
+    {k:"pm25",l:"PM2.5 μg/m³"},{k:"pm10",l:"PM10 μg/m³"},
+    {k:"no2", l:"NO₂ μg/m³"}, {k:"so2", l:"SO₂ μg/m³"},
+    {k:"co",  l:"CO mg/m³"},  {k:"temp",l:"Temp °C"},
+    {k:"humidity",l:"Humidity %"},{k:"wind",l:"Wind km/h"},
   ];
-  const weatherDefs = [
-    { key: "temp",     label: "Temp °C" },
-    { key: "humidity", label: "Humidity %" },
-    { key: "wind",     label: "Wind km/h" },
-  ];
-
-  const liveGrid = document.getElementById("live-pollutants");
-  liveGrid.innerHTML = "";
-
-  [...pollutantDefs, ...weatherDefs].forEach(def => {
-    const src = pollutantDefs.includes(def) ? waqi : weather;
-    const val = src[def.key];
-    const el  = document.createElement("div");
+  const grid = document.getElementById("hc-readings");
+  grid.innerHTML = "";
+  fields.forEach(f => {
+    const el = document.createElement("div");
     el.className = "live-item";
     el.innerHTML = `
-      <span class="live-item-label">${def.label}</span>
-      <span class="live-item-value">${val != null ? val : "—"}</span>
-    `;
-    liveGrid.appendChild(el);
+      <span class="live-item-label">${f.l}</span>
+      <span class="live-item-value">${readings[f.k] != null ? readings[f.k] : "—"}</span>`;
+    grid.appendChild(el);
   });
 
   // ── Model cards ────────────────────────────────────────
-  const MODEL_ORDER = ["Random Forest", "XGBoost", "LightGBM", "Ridge"];
-  const MODEL_COLORS = {
-    "Random Forest": "#FF9800",
-    "XGBoost":       "#2196F3",
-    "LightGBM":      "#4CAF50",
-    "Ridge":         "#AB47BC",
-  };
-
-  const grid = document.getElementById("model-cards");
-  grid.innerHTML = "";
+  const mcGrid = document.getElementById("hc-model-cards");
+  mcGrid.innerHTML = "";
   MODEL_ORDER.forEach((name, i) => {
     const pred = data.predictions[name] || {};
-    const aqi  = pred.aqi;
-    const col  = aqi != null ? aqiColor(aqi) : "#555";
+    const col  = pred.aqi != null ? aqiColor(pred.aqi) : "#555";
     const card = document.createElement("div");
     card.className = "model-card";
     card.style.animationDelay = `${i * 0.08}s`;
-    card.style.setProperty("--model-color", MODEL_COLORS[name]);
     card.innerHTML = `
       <div class="mc-name">${name}</div>
-      <div class="mc-aqi" style="color:${col}">${aqi != null ? aqi : "—"}</div>
-      <div class="mc-bucket" style="color:${col}; border:1px solid ${col}30">
+      <div class="mc-aqi" style="color:${col}">${pred.aqi ?? "—"}</div>
+      <div class="mc-bucket" style="color:${col};border:1px solid ${col}30">
         ${pred.bucket || "N/A"}
-      </div>
-    `;
-    grid.appendChild(card);
+      </div>`;
+    mcGrid.appendChild(card);
   });
 
-  const existingNote = document.getElementById("unit-note");
-  if (existingNote) existingNote.remove();   // remove stale note on re-predict
-  grid.insertAdjacentHTML("afterend", `
-      <p id="unit-note" style="font-size:0.72rem; color:var(--text-muted); margin-bottom:1.5rem; margin-top:0.4rem">
-          * NO₂ and SO₂ converted ppb → μg/m³ (×1.88, ×2.62). 
-            CO converted ppm → mg/m³ (×1.145) to match CPCB training units.
-            NO and NOx not available from WAQI — historical city medians used.
-      </p>
-  `);
-
-  // ── Historical context ────────────────────────────────
-  document.getElementById("ctx-month-name").textContent = data.month_name;
+  // ── Historical range ───────────────────────────────────
+  document.getElementById("hc-month-name").textContent = data.month_name;
   const hist = data.historical;
-  if (hist && hist.mean) {
-    const wrap = document.getElementById("range-bar-wrap");
-    const pMin = aqiToPercent(hist.min);
-    const pMax = aqiToPercent(hist.max);
-    const pMean= aqiToPercent(hist.mean);
-    wrap.innerHTML = `
+  if (hist?.mean) {
+    document.getElementById("hc-range-bar").innerHTML = `
       <div class="range-track">
-        <div class="range-marker" style="left:${pMean}%"></div>
-      </div>
-    `;
-    document.getElementById("range-stats").innerHTML = `
-      <div class="rs-item"><span class="rs-label">Min</span><span class="rs-value" style="color:var(--good)">${hist.min}</span></div>
-      <div class="rs-item"><span class="rs-label">Avg</span><span class="rs-value" style="color:var(--accent)">${hist.mean}</span></div>
-      <div class="rs-item"><span class="rs-label">Max</span><span class="rs-value" style="color:var(--verypoor)">${hist.max}</span></div>
-    `;
+        <div class="range-marker" style="left:${aqiToPercent(hist.mean)}%"></div>
+      </div>`;
+    document.getElementById("hc-range-stats").innerHTML = `
+      <div class="rs-item"><span class="rs-label">Min</span><span style="color:var(--good);font-family:'JetBrains Mono',monospace">${hist.min}</span></div>
+      <div class="rs-item"><span class="rs-label">Avg</span><span style="color:var(--accent);font-family:'JetBrains Mono',monospace">${hist.mean}</span></div>
+      <div class="rs-item"><span class="rs-label">Max</span><span style="color:var(--verypoor);font-family:'JetBrains Mono',monospace">${hist.max}</span></div>`;
   }
 
-  // ── Bucket donut chart ────────────────────────────────
-  bucketChartNowcast = renderBucketChart("bucket-chart-nowcast", data.bucket_dist, bucketChartNowcast);
-
-  // ── API warnings ──────────────────────────────────────
-  const warnBox = document.getElementById("api-warnings");
-  const warns   = [];
-  if (live.waqi_err)    warns.push(`⚠ WAQI: ${live.waqi_err}. Predictions use historical medians for pollutant values.`);
-  if (live.weather_err) warns.push(`⚠ Weather: ${live.weather_err}. Predictions use historical medians for weather.`);
-  if (warns.length) {
-    warnBox.innerHTML = warns.join("<br>");
-    warnBox.classList.remove("hidden");
-  } else {
-    warnBox.classList.add("hidden");
-  }
+  hcBucketChart = renderDonut("hc-bucket-chart", data.bucket_dist, hcBucketChart);
 }
 
-// ═══════════════════════════════════════════════════════════
-//  TAB 2 — HISTORICAL LOOKUP
-// ═══════════════════════════════════════════════════════════
-async function lookupHistorical() {
-  const city  = document.getElementById("hist-city").value;
-  const month = document.getElementById("hist-month").value;
-  const day   = document.getElementById("hist-day").value;
+// ══════════════════════════════════════════════════════════
+//  TAB 2 — TIME SERIES COMPARISON
+// ══════════════════════════════════════════════════════════
+async function loadTimeSeries() {
+  const city = document.getElementById("ts-city").value;
+  const year = document.getElementById("ts-year").value;
+  if (!city || !year) return;
 
-  document.getElementById("hist-results").classList.add("hidden");
-  document.getElementById("hist-loading").classList.remove("hidden");
+  document.getElementById("ts-results").classList.add("hidden");
+  document.getElementById("ts-loading").classList.remove("hidden");
 
-  try {
-    const url = `/api/historical?city=${encodeURIComponent(city)}&month=${month}&day=${day}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    renderHistorical(data, city, parseInt(month), parseInt(day));
-  } catch (err) {
-    document.getElementById("hist-loading").classList.add("hidden");
-    alert("Error: " + err.message);
-  }
+  const { ok, data } = await safeFetch(
+    `/api/timeseries?city=${encodeURIComponent(city)}&year=${year}`
+  );
+
+  document.getElementById("ts-loading").classList.add("hidden");
+  if (!ok || data.error) { alert("Error: " + data.error); return; }
+
+  renderTimeSeries(data);
 }
 
-function renderHistorical(data, city, month, day) {
-  document.getElementById("hist-loading").classList.add("hidden");
-  document.getElementById("hist-results").classList.remove("hidden");
+function renderTimeSeries(data) {
+  document.getElementById("ts-results").classList.remove("hidden");
 
-  const label = data.level === "day"
-    ? `${city} — ${MONTH_NAMES[month-1]} ${day}`
-    : `${city} — ${MONTH_NAMES[month-1]} (month average)`;
-  document.getElementById("hist-label").textContent = label;
+  const s = data.stats;
 
-  const color = data.color || "#00d4ff";
-  document.getElementById("hist-mean").textContent = data.mean || "—";
-  document.getElementById("hist-min").textContent  = data.min  || "—";
-  document.getElementById("hist-max").textContent  = data.max  || "—";
-
-  // Bucket badge
-  const badge = document.getElementById("hist-bucket-badge");
-  badge.textContent = data.bucket || "";
-  badge.style.background = (data.color || "#333") + "30";
-  badge.style.color       = data.color || "#ccc";
-  badge.style.border      = `1px solid ${data.color || "#333"}50`;
-
-  // Insight text
-  const bd        = data.bucket_dist || [];
-  const topBucket = bd.length ? bd.reduce((a,b) => a.pct > b.pct ? a : b) : null;
-  const insight   = document.getElementById("hist-insight");
-  if (topBucket) {
-    insight.textContent =
-      `Historically, ${topBucket.pct}% of days in ${MONTH_NAMES[month-1]} for ${city} ` +
-      `are classified as "${topBucket.AQI_Bucket}". ` +
-      `The typical AQI range spans from ${data.min} (cleanest) to ${data.max} (worst recorded).`;
-  }
-
-  // Range visualisation
-  const MAX_AQI  = 500;
-  const minPct   = (data.min  / MAX_AQI * 100).toFixed(1);
-  const maxPct   = (data.max  / MAX_AQI * 100).toFixed(1);
-  const meanPct  = (data.mean / MAX_AQI * 100).toFixed(1);
-
-  const vizWrap = document.getElementById("hist-range-viz");
-  vizWrap.innerHTML = `
-    <div class="range-viz" style="margin:0">
-      <div class="viz-pointer" style="left:${minPct}%; border-top-color:var(--good)"></div>
-      <div class="viz-pointer" style="left:${meanPct}%; border-top-color:#fff"></div>
-      <div class="viz-pointer" style="left:${maxPct}%; border-top-color:var(--verypoor)"></div>
+  // ── Stats strip ────────────────────────────────────────
+  document.getElementById("ts-stats-strip").innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">RMSE</div>
+      <div class="stat-value" style="color:#FF9800">${s.rmse}</div>
+      <div class="stat-sub">Root Mean Sq. Error</div>
     </div>
-    <div class="viz-labels">
-      <span>0</span><span>100</span><span>200</span><span>300</span><span>400</span><span>500+</span>
+    <div class="stat-card">
+      <div class="stat-label">MAE</div>
+      <div class="stat-value" style="color:#FF9800">${s.mae}</div>
+      <div class="stat-sub">Mean Abs. Error</div>
     </div>
-    <div style="display:flex; gap:1.5rem; margin-top:0.6rem; font-size:0.8rem; color:var(--text-dim)">
-      <span style="color:var(--good)">▲ Min: ${data.min}</span>
-      <span style="color:#fff">▲ Avg: ${data.mean}</span>
-      <span style="color:var(--verypoor)">▲ Max: ${data.max}</span>
+    <div class="stat-card">
+      <div class="stat-label">R²</div>
+      <div class="stat-value" style="color:${s.r2 > 0.9 ? "var(--good)" : "var(--moderate)"}">${s.r2 ?? "—"}</div>
+      <div class="stat-sub">Explained Variance</div>
     </div>
-  `;
+    <div class="stat-card">
+      <div class="stat-label">Avg AQI</div>
+      <div class="stat-value" style="color:${aqiColor(s.act_mean)}">${s.act_mean}</div>
+      <div class="stat-sub">Min ${s.act_min} · Max ${s.act_max}</div>
+    </div>`;
 
-  // Donut chart
-  bucketChartHist = renderBucketChart("bucket-chart-hist", data.bucket_dist, bucketChartHist);
-}
+  document.getElementById("ts-chart-title").textContent =
+    `${data.city} ${data.year} — Actual vs RF Predicted AQI`;
 
-// ═══════════════════════════════════════════════════════════
-//  TAB 3 — RISK HEATMAP
-// ═══════════════════════════════════════════════════════════
-async function loadHeatmap() {
-  const city = document.getElementById("heatmap-city").value;
-
-  document.getElementById("heatmap-results").classList.add("hidden");
-  document.getElementById("heatmap-loading").classList.remove("hidden");
-
-  try {
-    const res  = await fetch(`/api/heatmap?city=${encodeURIComponent(city)}`);
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    renderHeatmap(data);
-  } catch (err) {
-    document.getElementById("heatmap-loading").classList.add("hidden");
-    alert("Error: " + err.message);
-  }
-}
-
-function renderHeatmap(data) {
-  document.getElementById("heatmap-loading").classList.add("hidden");
-  document.getElementById("heatmap-results").classList.remove("hidden");
-
-  document.getElementById("heatmap-city-title").textContent =
-    `${data.city} — Seasonal AQI Risk`;
-
-  const strip   = document.getElementById("month-strip");
-  const tooltip = document.getElementById("month-tooltip");
-  strip.innerHTML = "";
-
-  data.months.forEach((m, idx) => {
-    const cell = document.createElement("div");
-    cell.className = "month-cell";
-    cell.style.animationDelay = `${idx * 0.05}s`;
-
-    if (m.mean != null) {
-      const col = m.color || aqiColor(m.mean);
-      cell.style.background  = col + "30";
-      cell.style.borderColor = col + "60";
-      cell.innerHTML = `
-        <div class="mc-month-name" style="color:${col}">${m.name}</div>
-        <div class="mc-aqi-value" style="color:${col}">${m.mean}</div>
-        <div class="mc-risk-label" style="color:${col}">${m.bucket}</div>
-      `;
-
-      // Tooltip on hover
-      cell.addEventListener("mouseenter", e => {
-        const bd  = (m.bucket_dist || [])
-          .sort((a,b) => b.pct - a.pct)
-          .slice(0, 3)
-          .map(b => `<div class="tooltip-row"><span>${b.AQI_Bucket}</span><span>${b.pct}%</span></div>`)
-          .join("");
-        tooltip.innerHTML = `
-          <div class="tooltip-title">${m.full_name}</div>
-          <div class="tooltip-row"><span>Avg AQI</span><span>${m.mean}</span></div>
-          <div class="tooltip-row"><span>Min / Max</span><span>${m.min} / ${m.max}</span></div>
-          <div class="tooltip-row"><span>Dominant</span><span>${m.dominant}</span></div>
-          <hr style="border-color:rgba(255,255,255,0.1); margin:0.4rem 0">
-          ${bd}
-          ${m.hazard_pct > 0
-            ? `<div class="tooltip-row" style="color:#ff6d00"><span>Hazard days</span><span>${m.hazard_pct}%</span></div>`
-            : ""}
-        `;
-        tooltip.classList.remove("hidden");
-        positionTooltip(e);
-      });
-      cell.addEventListener("mousemove", positionTooltip);
-      cell.addEventListener("mouseleave", () => tooltip.classList.add("hidden"));
-    } else {
-      cell.innerHTML = `<div class="mc-month-name" style="color:var(--text-muted)">${m.name}</div>
-                        <div style="color:var(--text-muted); font-size:0.8rem">N/A</div>`;
-      cell.style.opacity = "0.4";
-    }
-
-    strip.appendChild(cell);
-  });
-
-  // ── Trend line chart ──────────────────────────────────
-  if (heatmapTrendChart) heatmapTrendChart.destroy();
-  const trendCanvas = document.getElementById("heatmap-trend-chart");
-  const validMonths = data.months.filter(m => m.mean != null);
-
-  heatmapTrendChart = new Chart(trendCanvas, {
+  // ── Main line chart ────────────────────────────────────
+  if (tsMainChart) tsMainChart.destroy();
+  tsMainChart = new Chart(document.getElementById("ts-main-chart"), {
     type: "line",
     data: {
-      labels: validMonths.map(m => m.name),
-      datasets: [{
-        label: "Avg AQI",
-        data:  validMonths.map(m => m.mean),
-        borderColor: ctx => {
-          const grad = ctx.chart.ctx.createLinearGradient(0, 0, ctx.chart.width, 0);
-          grad.addColorStop(0,   "#00c853");
-          grad.addColorStop(0.4, "#ffd600");
-          grad.addColorStop(0.8, "#dd2c00");
-          return grad;
+      labels: data.dates,
+      datasets: [
+        {
+          label: "Actual AQI",
+          data:  data.actual,
+          borderColor: "#00d4ff",
+          backgroundColor: "rgba(0,212,255,0.04)",
+          borderWidth: 1.5,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+          spanGaps: true,
         },
-        backgroundColor: "rgba(0,212,255,0.06)",
-        borderWidth: 2.5,
-        pointBackgroundColor: validMonths.map(m => m.color || aqiColor(m.mean)),
-        pointRadius: 5, pointHoverRadius: 7,
-        fill: true, tension: 0.4,
-      }]
+        {
+          label: "RF Predicted",
+          data:  data.predicted,
+          borderColor: "#FF9800",
+          backgroundColor: "rgba(255,152,0,0.04)",
+          borderWidth: 1.5,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: false,
+          tension: 0.3,
+          borderDash: [4, 2],
+        }
+      ]
     },
     options: {
       responsive: true,
+      interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { display: false },
+        legend: {
+          display: false   // we use custom legend in HTML
+        },
         tooltip: {
           callbacks: {
-            label: ctx => ` AQI: ${ctx.parsed.y} (${aqiBucket(ctx.parsed.y)})`
+            title: ctx => ctx[0].label,
+            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y} (${aqiBucket(ctx.parsed.y)})`
           }
         }
       },
       scales: {
-        x: { ticks: { color: "#5a7a99", font: { family: "Jost" } }, grid: { color: "rgba(255,255,255,0.04)" } },
+        x: {
+          ticks: {
+            color: "#5a7a99",
+            font: { family: "JetBrains Mono", size: 10 },
+            maxTicksLimit: 12,
+            maxRotation: 0,
+          },
+          grid: { color: "rgba(255,255,255,0.03)" }
+        },
         y: {
           ticks: { color: "#5a7a99", font: { family: "JetBrains Mono", size: 11 } },
           grid:  { color: "rgba(255,255,255,0.04)" },
@@ -440,205 +329,111 @@ function renderHeatmap(data) {
     }
   });
 
-  // ── Insight text ──────────────────────────────────────
-  const withData = data.months.filter(m => m.mean != null);
-  if (withData.length) {
-    const worst  = withData.reduce((a,b) => a.mean > b.mean ? a : b);
-    const best   = withData.reduce((a,b) => a.mean < b.mean ? a : b);
-    const highRisk = withData.filter(m => m.mean > 200).map(m => m.full_name);
-    const insightEl = document.getElementById("heatmap-insight");
-    insightEl.innerHTML = `
-      <p>
-        <strong>Worst month:</strong> ${worst.full_name} (avg AQI ${worst.mean} — ${worst.bucket})<br>
-        <strong>Best month:</strong>  ${best.full_name}  (avg AQI ${best.mean}  — ${best.bucket})<br>
-        ${highRisk.length
-          ? `<strong>High-risk months (AQI > 200):</strong> ${highRisk.join(", ")} — consider avoiding outdoor activity.<br>`
-          : `No months average above AQI 200 — relatively good annual air quality.<br>`}
-        ${worst.hazard_pct > 0
-          ? `<strong>${worst.full_name}</strong> has ${worst.hazard_pct}% of days classified as Very Poor or Severe.`
-          : ""}
-      </p>
-    `;
-  }
-}
-
-function positionTooltip(e) {
-  const tt = document.getElementById("month-tooltip");
-  const margin = 12;
-  let x = e.clientX + margin;
-  let y = e.clientY + margin;
-  if (x + 240 > window.innerWidth)  x = e.clientX - 240 - margin;
-  if (y + 200 > window.innerHeight) y = e.clientY - 200 - margin;
-  tt.style.left = x + "px";
-  tt.style.top  = y + "px";
-}
-
-// ── Mode toggle ──────────────────────────────────────
-let currentMode = "live";
-
-function setMode(mode) {
-  currentMode = mode;
-  document.getElementById("mode-live").classList.toggle("active", mode === "live");
-  document.getElementById("mode-past").classList.toggle("active", mode === "past");
-  document.getElementById("date-wrap").style.display  = mode === "past" ? "flex" : "none";
-  document.getElementById("btn-label").textContent    = mode === "live" ? "Predict Now" : "Run Hindcast";
-  document.getElementById("actual-banner").classList.add("hidden");
-  document.getElementById("nowcast-results").classList.add("hidden");
-}
-
-// ── Update runNowcast to handle both modes ────────────
-async function runNowcast() {
-  async function safeFetch(url, options) {
-    const res  = await fetch(url, options);
-    const text = await res.text();  // always read as text first
-    try {
-        const data = JSON.parse(text);
-        return { ok: res.ok, status: res.status, data };
-    } catch {
-        // Flask returned HTML (unhandled exception page)
-        const preview = text.slice(0, 120).replace(/<[^>]+>/g, "").trim();
-        return {
-            ok: false,
-            status: res.status,
-            data: { error: `Server returned non-JSON response (${res.status}): ${preview}` }
-        };
-    }
-  }
-
-  const city = document.getElementById("nowcast-city").value;
-  if (!city) return;
-
-  document.getElementById("nowcast-results").classList.add("hidden");
-  document.getElementById("actual-banner").classList.add("hidden");
-  document.getElementById("nowcast-loading").classList.remove("hidden");
-
-  try {
-    let data;
-    if (currentMode === "live") {
-      const { ok, data } = await safeFetch("/api/nowcast", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ city })
-      });
-      if (!ok || data.error) throw new Error(data.error || "Unknown error");
-      renderNowcast(data);
-    } else {
-      const date = document.getElementById("past-date").value;
-      const { ok, data } = await safeFetch("/api/hindcast", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ city, date })
-      });
-      if (!ok || data.error) throw new Error(data.error || "Unknown error");
-      renderHindcast(data);
-    }
-  } catch (err) {
-    document.getElementById("nowcast-loading").classList.add("hidden");
-    alert("Error: " + err.message);
-  }
-}
-
-function renderHindcast(data) {
-  document.getElementById("nowcast-loading").classList.add("hidden");
-
-  // ── Actual AQI banner ────────────────────────────────
-  const actual = data.actual;
-  if (actual.aqi != null) {
-    const banner = document.getElementById("actual-banner");
-    banner.style.background   = actual.color + "18";
-    banner.style.borderColor  = actual.color + "50";
-    banner.style.color        = actual.color;
-    banner.classList.remove("hidden");
-
-    // Error % vs each model
-    const MODEL_ORDER = ["Random Forest","XGBoost","LightGBM","Ridge"];
-    const errRows = MODEL_ORDER.map(name => {
-      const pred = data.predictions[name];
-      if (!pred || pred.aqi == null) return "";
-      const err = ((pred.aqi - actual.aqi) / actual.aqi * 100).toFixed(1);
-      const sign = err > 0 ? "+" : "";
-      return `${name}: ${sign}${err}%`;
-    }).join(" &nbsp;|&nbsp; ");
-
-    banner.innerHTML = `
-      <div class="actual-banner-left">
-        <span class="actual-banner-label">Actual Recorded AQI — ${data.date}</span>
-        <span class="actual-banner-aqi">${actual.aqi}</span>
-        <span class="actual-banner-bucket">${actual.bucket}</span>
-      </div>
-      <div class="actual-banner-right">
-        <div style="margin-bottom:0.3rem; opacity:0.6; font-size:0.72rem">MODEL ERROR VS ACTUAL</div>
-        ${errRows}
-      </div>
-    `;
-  }
-
-  // ── Reuse live strip with actual readings ────────────
-  const readings = actual.readings || {};
-  document.getElementById("live-station-name").textContent = `${data.city} — Historical Data`;
-  document.getElementById("live-updated").textContent = data.date;
-
-  const liveGrid = document.getElementById("live-pollutants");
-  liveGrid.innerHTML = "";
-  const fields = [
-    { key:"pm25",     label:"PM2.5 μg/m³" },
-    { key:"pm10",     label:"PM10 μg/m³"  },
-    { key:"no2",      label:"NO₂ μg/m³"   },
-    { key:"so2",      label:"SO₂ μg/m³"   },
-    { key:"co",       label:"CO mg/m³"    },
-    { key:"temp",     label:"Temp °C"     },
-    { key:"humidity", label:"Humidity %"  },
-    { key:"wind",     label:"Wind km/h"   },
-  ];
-  fields.forEach(f => {
-    const el = document.createElement("div");
-    el.className = "live-item";
-    el.innerHTML = `
-      <span class="live-item-label">${f.label}</span>
-      <span class="live-item-value">${readings[f.key] != null ? readings[f.key] : "—"}</span>
-    `;
-    liveGrid.appendChild(el);
-  });
-
-  // Reuse the rest of renderNowcast for model cards + charts
-  document.getElementById("nowcast-results").classList.remove("hidden");
-  const MODEL_ORDER  = ["Random Forest","XGBoost","LightGBM","Ridge"];
-  const MODEL_COLORS = { "Random Forest":"#FF9800","XGBoost":"#2196F3","LightGBM":"#4CAF50","Ridge":"#AB47BC" };
-  const grid = document.getElementById("model-cards");
-  grid.innerHTML = "";
-  MODEL_ORDER.forEach((name, i) => {
-    const pred = data.predictions[name] || {};
-    const aqi  = pred.aqi;
-    const col  = aqi != null ? aqiColor(aqi) : "#555";
+  // ── Monthly cards ──────────────────────────────────────
+  const mgrid = document.getElementById("ts-monthly-grid");
+  mgrid.innerHTML = "";
+  data.monthly.forEach((m, i) => {
     const card = document.createElement("div");
-    card.className = "model-card";
-    card.style.animationDelay = `${i * 0.08}s`;
-    card.innerHTML = `
-      <div class="mc-name">${name}</div>
-      <div class="mc-aqi" style="color:${col}">${aqi != null ? aqi : "—"}</div>
-      <div class="mc-bucket" style="color:${col}; border:1px solid ${col}30">${pred.bucket || "N/A"}</div>
-    `;
-    grid.appendChild(card);
+    card.className = "month-card";
+    card.style.animationDelay = `${i * 0.04}s`;
+    if (m.actual_mean != null) {
+      const col = m.color || aqiColor(m.actual_mean);
+      card.style.background  = col + "22";
+      card.style.borderColor = col + "55";
+      card.innerHTML = `
+        <div class="mc-mname" style="color:${col}">${m.name}</div>
+        <div class="mc-maqi"  style="color:${col}">${m.actual_mean}</div>
+        <div class="mc-mpred" style="color:${col}">RF:${m.pred_mean}</div>`;
+    } else {
+      card.style.opacity = "0.3";
+      card.innerHTML = `<div class="mc-mname" style="color:var(--text-muted)">${m.name}</div>
+                        <div style="color:var(--text-muted);font-size:0.8rem">—</div>`;
+    }
+    mgrid.appendChild(card);
   });
 
-  document.getElementById("ctx-month-name").textContent = data.month_name;
-  const hist = data.historical;
-  if (hist && hist.mean) {
-    const pMean = aqiToPercent(hist.mean);
-    document.getElementById("range-bar-wrap").innerHTML = `
-      <div class="range-track">
-        <div class="range-marker" style="left:${pMean}%"></div>
-      </div>`;
-    document.getElementById("range-stats").innerHTML = `
-      <div class="rs-item"><span class="rs-label">Min</span><span class="rs-value" style="color:var(--good)">${hist.min}</span></div>
-      <div class="rs-item"><span class="rs-label">Avg</span><span class="rs-value" style="color:var(--accent)">${hist.mean}</span></div>
-      <div class="rs-item"><span class="rs-label">Max</span><span class="rs-value" style="color:var(--verypoor)">${hist.max}</span></div>
-    `;
-  }
-  bucketChartNowcast = renderBucketChart("bucket-chart-nowcast", data.bucket_dist, bucketChartNowcast);
+  // ── Scatter: predicted vs actual ──────────────────────
+  if (tsScatterChart) tsScatterChart.destroy();
+  const scatterPts = data.actual
+    .map((a, i) => ({ x: a, y: data.predicted[i] }))
+    .filter(p => p.x != null);
 
-  // Hide API warning note in hindcast mode
-  const note = document.getElementById("unit-note");
-  if (note) note.remove();
-  document.getElementById("api-warnings").classList.add("hidden");
+  const maxVal = Math.max(...scatterPts.map(p => Math.max(p.x, p.y)));
+  tsScatterChart = new Chart(document.getElementById("ts-scatter-chart"), {
+    type: "scatter",
+    data: {
+      datasets: [
+        {
+          label: "Predicted vs Actual",
+          data: scatterPts,
+          backgroundColor: "rgba(255,152,0,0.35)",
+          pointRadius: 2.5,
+          pointHoverRadius: 5,
+        },
+        {
+          label: "Perfect fit",
+          data: [{ x:0, y:0 }, { x: maxVal, y: maxVal }],
+          type: "line",
+          borderColor: "rgba(0,212,255,0.5)",
+          borderWidth: 1.5,
+          borderDash: [5, 3],
+          pointRadius: 0,
+          fill: false,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { labels: { color: "#5a7a99", font: { family: "Jost", size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` Actual ${ctx.parsed.x} → Pred ${ctx.parsed.y}`
+          }
+        }
+      },
+      scales: {
+        x: { title:{ display:true, text:"Actual AQI",    color:"#5a7a99" }, ticks:{color:"#5a7a99"}, grid:{color:"rgba(255,255,255,0.04)"}},
+        y: { title:{ display:true, text:"Predicted AQI", color:"#5a7a99" }, ticks:{color:"#5a7a99"}, grid:{color:"rgba(255,255,255,0.04)"}},
+      }
+    }
+  });
+
+  // ── Residuals bar chart ────────────────────────────────
+  if (tsResidualChart) tsResidualChart.destroy();
+  const residuals = data.actual
+    .map((a, i) => a != null ? parseFloat((data.predicted[i] - a).toFixed(1)) : null)
+    .filter(v => v != null);
+  const resLabels = data.dates.filter((_, i) => data.actual[i] != null);
+  const resColors = residuals.map(v =>
+    v > 0 ? "rgba(255,109,0,0.55)" : "rgba(0,200,83,0.55)"
+  );
+
+  tsResidualChart = new Chart(document.getElementById("ts-residual-chart"), {
+    type: "bar",
+    data: {
+      labels: resLabels,
+      datasets: [{
+        label: "Residual (Pred − Actual)",
+        data:  residuals,
+        backgroundColor: resColors,
+        borderWidth: 0,
+        barPercentage: 0.8,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { labels:{ color:"#5a7a99", font:{ family:"Jost", size:11 }}},
+        tooltip: { callbacks:{ label: ctx => ` ${ctx.parsed.y > 0 ? "+" : ""}${ctx.parsed.y} AQI` }}
+      },
+      scales: {
+        x: { ticks:{ color:"#5a7a99", maxTicksLimit:10, maxRotation:0, font:{size:10} }, grid:{color:"rgba(255,255,255,0.03)"}},
+        y: {
+          ticks:{ color:"#5a7a99" }, grid:{ color:"rgba(255,255,255,0.04)" },
+          title:{ display:true, text:"Pred − Actual", color:"#5a7a99" }
+        }
+      }
+    }
+  });
 }

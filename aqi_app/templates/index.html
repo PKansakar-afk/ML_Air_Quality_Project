@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>AQI Intelligence — India Air Quality Monitor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -12,257 +12,167 @@
 </head>
 <body>
 
-  <!-- ── HEADER ───────────────────────────────────────── -->
   <header>
     <div class="header-inner">
       <div class="logo">
         <span class="logo-icon">◈</span>
         <span class="logo-text">AQI<span class="logo-accent">Intelligence</span></span>
       </div>
-      <p class="header-sub">India Air Quality Prediction — Powered by ML + Live APIs</p>
+      <p class="header-sub">India Air Quality Prediction — Powered by 4 ML Models + Live APIs</p>
     </div>
   </header>
 
-  <!-- ── TAB NAV ──────────────────────────────────────── -->
   <nav class="tab-nav">
-    <button class="tab-btn active" data-tab="nowcast">
-      <span class="tab-icon">⚡</span> Nowcast
+    <button class="tab-btn active" data-tab="timeseries">
+      <span class="tab-icon">📈</span> Time Series Comparison
     </button>
-    <button class="tab-btn" data-tab="historical">
-      <span class="tab-icon">📅</span> Historical Lookup
-    </button>
-    <button class="tab-btn" data-tab="heatmap">
-      <span class="tab-icon">🌡</span> Risk Heatmap
+    <button class="tab-btn" data-tab="hindcast">
+      <span class="tab-icon">🕐</span> Single-Day Forecast
     </button>
   </nav>
 
-  <!-- ── MAIN CONTENT ─────────────────────────────────── -->
   <main>
 
-    <!-- ════════════════════════════════════════════════
-         TAB 1 — NOWCAST
-    ════════════════════════════════════════════════ -->
-    <section id="tab-nowcast" class="tab-panel active">
+    <!-- ══════════════════════════════════════════════
+         TAB 1 — TIME SERIES COMPARISON
+    ══════════════════════════════════════════════ -->
+    <section id="tab-timeseries" class="tab-panel active">
       <div class="panel-header">
-        <h2>Real-Time AQI Nowcast</h2>
-        <p>Fetches live pollutant data from WAQI API + current weather from Open-Meteo, then runs all 4 tuned models.</p>
+        <h2>Time Series Comparison</h2>
+        <p>Actual AQI from CPCB dataset vs Random Forest predictions for a full year. Uses real lag &amp; rolling features computed from the dataset — the most accurate prediction scenario.</p>
       </div>
 
-      <!-- Replace the existing control-row in tab-nowcast with this -->
-        <div class="control-row">
-          <div class="select-wrap">
-            <label>City</label>
-            <select id="nowcast-city">
-              {% for city in cities %}
-              <option value="{{ city }}">{{ city }}</option>
-              {% endfor %}
-            </select>
-          </div>
+      <div class="control-row">
+        <div class="select-wrap">
+          <label>City</label>
+          <select id="ts-city" onchange="loadTimeSeries()">
+            {% for city in cities %}
+            <option value="{{ city }}">{{ city }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="select-wrap">
+          <label>Year</label>
+          <select id="ts-year" onchange="loadTimeSeries()">
+            <option value="2015">2015</option>
+            <option value="2016">2016</option>
+            <option value="2017">2017</option>
+            <option value="2018">2018</option>
+            <option value="2019" selected>2019</option>
+            <option value="2020">2020</option>
+          </select>
+        </div>
+        <button class="predict-btn" onclick="loadTimeSeries()">
+          <span class="btn-icon">📈</span> Load Chart
+        </button>
+      </div>
 
-          <!-- Mode toggle -->
-          <div class="select-wrap">
-            <label>Mode</label>
-            <div class="mode-toggle">
-              <button class="mode-btn active" id="mode-live" onclick="setMode('live')">
-                ⚡ Live
-              </button>
-              <button class="mode-btn" id="mode-past" onclick="setMode('past')">
-                🕐 Past Date
-              </button>
+      <div id="ts-loading" class="loading-state hidden">
+        <div class="spinner"></div><p>Computing predictions for full year…</p>
+      </div>
+
+      <div id="ts-results" class="hidden">
+
+        <!-- Stats strip -->
+        <div class="stats-strip" id="ts-stats-strip"></div>
+
+        <!-- Main chart -->
+        <div class="card chart-full">
+          <div class="chart-header">
+            <h4 id="ts-chart-title">AQI — Actual vs Predicted</h4>
+            <div class="chart-legend">
+              <span class="legend-dot" style="background:#00d4ff"></span> Actual
+              <span class="legend-dot" style="background:#FF9800; margin-left:1rem"></span> RF Predicted
             </div>
           </div>
-
-          <!-- Past date picker (hidden by default) -->
-          <div class="select-wrap" id="date-wrap" style="display:none">
-            <label>Date (2015–2020)</label>
-            <input type="date" id="past-date"
-                  min="2015-01-01"
-                  value="2020-01-15">
-          </div>
-
-          <button class="predict-btn" id="nowcast-btn" onclick="runNowcast()">
-            <span class="btn-icon">⚡</span>
-            <span id="btn-label">Predict Now</span>
-          </button>
+          <canvas id="ts-main-chart" height="100"></canvas>
         </div>
 
-        <!-- Actual AQI banner (shown only for past mode) -->
-        <div id="actual-banner" class="actual-banner hidden"></div>
+        <!-- Monthly summary strip -->
+        <h3 class="section-label" style="margin-top:2rem">Monthly Averages</h3>
+        <div class="monthly-grid" id="ts-monthly-grid"></div>
 
-      <div id="nowcast-loading" class="loading-state hidden">
-        <div class="spinner"></div>
-        <p>Fetching live data &amp; running models…</p>
+        <!-- Scatter: predicted vs actual -->
+        <div class="context-row" style="margin-top:1.5rem">
+          <div class="card chart-card">
+            <h4>Predicted vs Actual Scatter</h4>
+            <canvas id="ts-scatter-chart" height="260"></canvas>
+          </div>
+          <div class="card chart-card">
+            <h4>Residuals (Predicted − Actual)</h4>
+            <canvas id="ts-residual-chart" height="260"></canvas>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════
+         TAB 2 — HINDCAST
+    ══════════════════════════════════════════════ -->
+    <section id="tab-hindcast" class="tab-panel hidden">
+      <div class="panel-header">
+        <h2>AQI Single-Day Forecast</h2>
+        <p>Select a city and a past date. For dates within the training set (2015–mid 2020), actual pollutant readings from the CPCB dataset are used. For later dates, Open-Meteo Archive is queried.</p>
       </div>
 
-      <div id="nowcast-results" class="hidden">
+      <div class="control-row">
+        <div class="select-wrap">
+          <label>City</label>
+          <select id="hc-city">
+            {% for city in cities %}
+            <option value="{{ city }}">{{ city }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="select-wrap">
+          <label>Date</label>
+          <input type="date" id="hc-date"
+                 min="2015-01-01" max="2024-12-31"
+                 value="2019-11-15">
+        </div>
+        <button class="predict-btn" onclick="runHindcast()">
+          <span class="btn-icon">🔍</span> Run Single-Day Forecast
+        </button>
+      </div>
 
-        <!-- Live Data Strip -->
-        <div class="live-strip" id="live-strip">
+      <div id="hc-loading" class="loading-state hidden">
+        <div class="spinner"></div><p>Fetching data &amp; running models…</p>
+      </div>
+
+      <div id="hc-results" class="hidden">
+
+        <!-- Actual AQI banner (only when within training set) -->
+        <div id="actual-banner" class="actual-banner hidden"></div>
+
+        <!-- Data source strip -->
+        <div class="live-strip" id="hc-data-strip">
           <div class="live-header">
-            <span class="live-dot"></span>
-            <span id="live-station-name">Live Data</span>
-            <span id="live-updated" class="live-time"></span>
+            <span id="hc-source-icon">📂</span>
+            <span id="hc-source-label">Data Source</span>
+            <span id="hc-date-label" class="live-time"></span>
           </div>
-          <div class="live-grid" id="live-pollutants"></div>
+          <div class="live-grid" id="hc-readings"></div>
         </div>
 
-        <!-- Model Predictions -->
+        <!-- Model predictions -->
         <h3 class="section-label">Model Predictions</h3>
-        <div class="model-grid" id="model-cards"></div>
+        <div class="model-grid" id="hc-model-cards"></div>
 
-        <!-- Historical Context + Bucket Chart -->
+        <!-- Historical context + bucket chart -->
         <div class="context-row">
           <div class="card context-card">
-            <h4>Historical Range — <span id="ctx-month-name"></span></h4>
+            <h4>Historical Range — <span id="hc-month-name"></span></h4>
             <p class="ctx-sub">Based on 2015–2020 data for this month</p>
-            <div class="range-bar-wrap" id="range-bar-wrap"></div>
-            <div class="range-stats" id="range-stats"></div>
+            <div id="hc-range-bar"></div>
+            <div class="range-stats" id="hc-range-stats"></div>
           </div>
           <div class="card chart-card">
             <h4>Historical AQI Distribution — This Month</h4>
-            <canvas id="bucket-chart-nowcast" height="200"></canvas>
+            <canvas id="hc-bucket-chart" height="200"></canvas>
           </div>
         </div>
 
-        <div id="api-warnings" class="warnings hidden"></div>
-      </div>
-    </section>
-
-    <!-- ════════════════════════════════════════════════
-         TAB 2 — HISTORICAL LOOKUP
-    ════════════════════════════════════════════════ -->
-    <section id="tab-historical" class="tab-panel hidden">
-      <div class="panel-header">
-        <h2>Historical AQI Lookup</h2>
-        <p>Select a city and date to see the average, minimum, and maximum AQI recorded historically for that day.</p>
-      </div>
-
-      <div class="control-row">
-        <div class="select-wrap">
-          <label>City</label>
-          <select id="hist-city">
-            {% for city in cities %}
-            <option value="{{ city }}">{{ city }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="select-wrap">
-          <label>Month</label>
-          <select id="hist-month">
-            <option value="1">January</option><option value="2">February</option>
-            <option value="3">March</option><option value="4">April</option>
-            <option value="5">May</option><option value="6">June</option>
-            <option value="7">July</option><option value="8">August</option>
-            <option value="9">September</option><option value="10">October</option>
-            <option value="11">November</option><option value="12">December</option>
-          </select>
-        </div>
-        <div class="select-wrap">
-          <label>Day</label>
-          <select id="hist-day">
-            {% for d in range(1, 32) %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
-          </select>
-        </div>
-        <button class="predict-btn" onclick="lookupHistorical()">
-          <span class="btn-icon">🔍</span> Look Up
-        </button>
-      </div>
-
-      <div id="hist-loading" class="loading-state hidden">
-        <div class="spinner"></div><p>Fetching historical data…</p>
-      </div>
-
-      <div id="hist-results" class="hidden">
-        <div class="hist-hero">
-          <div class="hist-city-label" id="hist-label"></div>
-          <div class="hist-aqi-display">
-            <div class="hist-stat">
-              <span class="hist-stat-label">Average</span>
-              <span class="hist-stat-value" id="hist-mean">—</span>
-            </div>
-            <div class="hist-divider"></div>
-            <div class="hist-stat">
-              <span class="hist-stat-label">Minimum</span>
-              <span class="hist-stat-value green" id="hist-min">—</span>
-            </div>
-            <div class="hist-divider"></div>
-            <div class="hist-stat">
-              <span class="hist-stat-label">Maximum</span>
-              <span class="hist-stat-value red" id="hist-max">—</span>
-            </div>
-          </div>
-          <div class="hist-bucket-badge" id="hist-bucket-badge"></div>
-          <div class="hist-insight" id="hist-insight"></div>
-        </div>
-
-        <div class="context-row">
-          <div class="card">
-            <h4>AQI Range Visualisation</h4>
-            <div id="hist-range-viz" class="range-viz"></div>
-          </div>
-          <div class="card chart-card">
-            <h4>AQI Bucket Distribution — This Month</h4>
-            <canvas id="bucket-chart-hist" height="200"></canvas>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ════════════════════════════════════════════════
-         TAB 3 — RISK HEATMAP
-    ════════════════════════════════════════════════ -->
-    <section id="tab-heatmap" class="tab-panel hidden">
-      <div class="panel-header">
-        <h2>Seasonal Risk Heatmap</h2>
-        <p>Monthly AQI risk overview for any city. Colour intensity indicates average pollution level.</p>
-      </div>
-
-      <div class="control-row">
-        <div class="select-wrap">
-          <label>City</label>
-          <select id="heatmap-city" onchange="loadHeatmap()">
-            {% for city in cities %}
-            <option value="{{ city }}">{{ city }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <button class="predict-btn" onclick="loadHeatmap()">
-          <span class="btn-icon">🌡</span> Show Heatmap
-        </button>
-      </div>
-
-      <div id="heatmap-loading" class="loading-state hidden">
-        <div class="spinner"></div><p>Computing seasonal risk…</p>
-      </div>
-
-      <div id="heatmap-results" class="hidden">
-        <div class="heatmap-city-title" id="heatmap-city-title"></div>
-
-        <!-- 12-month strip -->
-        <div class="month-strip" id="month-strip"></div>
-
-        <!-- Tooltip -->
-        <div class="month-tooltip hidden" id="month-tooltip"></div>
-
-        <!-- Legend -->
-        <div class="heatmap-legend">
-          <span class="legend-label">AQI Level:</span>
-          <span class="legend-item" style="background:#00c853">Good ≤50</span>
-          <span class="legend-item" style="background:#aeea00;color:#111">Satisfactory ≤100</span>
-          <span class="legend-item" style="background:#ffd600;color:#111">Moderate ≤200</span>
-          <span class="legend-item" style="background:#ff6d00">Poor ≤300</span>
-          <span class="legend-item" style="background:#dd2c00">Very Poor ≤400</span>
-          <span class="legend-item" style="background:#6a0080">Severe 400+</span>
-        </div>
-
-        <!-- Monthly trend chart -->
-        <div class="card" style="margin-top:2rem">
-          <h4>Monthly Average AQI Trend</h4>
-          <canvas id="heatmap-trend-chart" height="120"></canvas>
-        </div>
-
-        <!-- Insight box -->
-        <div class="card insight-box" id="heatmap-insight"></div>
       </div>
     </section>
 
@@ -270,9 +180,9 @@
 
   <footer>
     <p>Models: Random Forest · XGBoost · LightGBM · Ridge &nbsp;|&nbsp;
-       Live data: <a href="https://aqicn.org" target="_blank">WAQI</a> &amp;
-       <a href="https://open-meteo.com" target="_blank">Open-Meteo</a> &nbsp;|&nbsp;
-       Training data: 2015–2020 India CPCB</p>
+       Data: CPCB 2015–2020 &nbsp;|&nbsp;
+       Extended: <a href="https://open-meteo.com" target="_blank">Open-Meteo Archive</a>
+    </p>
   </footer>
 
   <script src="/static/js/main.js"></script>
